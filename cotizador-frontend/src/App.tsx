@@ -1,6 +1,10 @@
-import React, { useMemo, useState } from "react";
+import React, { useState } from "react";
 
-const BACKEND = "http://127.0.0.1:8000"; // Cambia a IP del servidor si aplica
+// Usa la URL de la API desde variable de entorno en producción (Vercel)
+// y deja un fallback seguro a tu dominio público.
+const BACKEND =
+  import.meta.env.VITE_API_BASE || "https://api.tinnova.pe";
+
 const LOGO_URL = `${BACKEND}/static/logo.png`;
 
 type SimilarItem = {
