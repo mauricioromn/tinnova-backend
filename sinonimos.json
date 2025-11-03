@@ -1,0 +1,38 @@
+{
+    "tomatodo": [
+        "botella",
+        "bidon",
+        "cantimplora",
+        "tomatodos",
+        "logo",
+        "color"
+    ],
+    "bolsa": [
+        "morral",
+        "bag",
+        "tote"
+    ],
+    "lapicero": [
+        "boligrafo",
+        "pluma",
+        "esfero",
+        "pen"
+    ],
+    "taza": [
+        "mug",
+        "jarro",
+        "vaso"
+    ],
+    "mochila": [
+        "backpack",
+        "morral",
+        "bolso"
+    ],
+    "polo": [
+        "camiseta",
+        "playera",
+        "polera",
+        "remera",
+        "shirt"
+    ]
+}

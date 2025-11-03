@@ -1,0 +1,8 @@
+﻿.env
+proformas/
+imagenes_proformas/
+base_visual.csv
+png_map.csv
+cotizaciones.csv
+__pycache__/
+*.pyc
