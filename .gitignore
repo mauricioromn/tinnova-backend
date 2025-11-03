@@ -1,0 +1,14 @@
+﻿__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+.env.*
+*.key
+*.pem
+.DS_Store
+.idea/
+.vscode/
+# CSV grandes NO versionados
+base_visual.csv
+vectores_imagenes.csv
