@@ -45,3 +45,6 @@ vectores_imagenes.csv
 # No versionar CSVs grandes
 base_visual.csv
 vectores_imagenes.csv
+
+cotizador-frontend/
+
