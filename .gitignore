@@ -1,14 +1,100 @@
+<<<<<<< HEAD
 ﻿__pycache__/
 *.py[cod]
 .venv/
 venv/
+=======
+﻿# ------------------------------
+# Python / FastAPI
+# ------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.venv/
+
+# Bytecode / cache
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Python build / dist
+build/
+dist/
+*.egg-info/
+
+# ------------------------------
+# Node / React (Frontend)
+# ------------------------------
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Vite build output
+dist/
+
+# ------------------------------
+# Environment / Secrets
+# ------------------------------
+>>>>>>> rescue-backend-20251103-1923
 .env
 .env.*
 *.key
 *.pem
+<<<<<<< HEAD
 .DS_Store
 .idea/
 .vscode/
 # CSV grandes NO versionados
 base_visual.csv
 vectores_imagenes.csv
+=======
+
+# ------------------------------
+# OS / IDE / Editor
+# ------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
+
+# ------------------------------
+# No versionar archivos locales
+# ------------------------------
+# CSV pesados y generados
+base_visual.csv
+vectores_imagenes.csv
+png_map.csv
+cotizaciones.csv
+
+# Proformas PDF locales
+proformas/
+*.pdf
+
+# Imágenes locales de extracción
+imagenes_proformas/
+static/
+*.png
+*.jpg
+*.jpeg
+*.webp
+
+# Backups automáticos
+*_backup.*
+*_old.*
+*.bak
+
+# ------------------------------
+# Frontend link (si está junto al backend, ignorar build)
+# ------------------------------
+# NO IGNORAR cotizador-frontend (es tu repo frontend separado)
+# Si algún día se copia dentro del backend, ignorar la carpeta creada:
+# cotizador-frontend/
+
+>>>>>>> rescue-backend-20251103-1923
