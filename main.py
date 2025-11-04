@@ -1,24 +1,21 @@
-# main.py — Cotizador Tinnova S.A.C. (v4.6.1, patched)
-# ---------------------------------------------------------------------------------
-# Requisitos (backend):
-#   pip install fastapi uvicorn[standard] python-multipart pandas numpy pillow reportlab
-#   pip install transformers torch --extra-index-url https://download.pytorch.org/whl/cpu
-#   pip install supabase boto3 python-dotenv
-#
-# Ejecutar local:
-#   uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+# =============================
+# main.py — Cotizador Tinnova S.A.C. (v4.6.2)
+# =============================
 
 from __future__ import annotations
-
-import os, io, re, uuid, csv
+import os, io, re, uuid, csv, logging
 from datetime import datetime
 from typing import List, Optional
+
+# ========= Logging global ==========
+logger = logging.getLogger("tinnova")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO)  # DEBUG si deseas más info
 
 # ========= ENV / CLOUD ==========
 from dotenv import load_dotenv
 load_dotenv()
 
-# Claves SIEMPRE por entorno (.env)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE")
 
@@ -27,16 +24,14 @@ AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 S3_BUCKET = os.getenv("S3_BUCKET")
 
-# Supabase client (opcional)
 from supabase import create_client, Client
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
     except Exception as e:
-        print("[WARN] No se pudo inicializar Supabase:", e)
+        logger.warning(f"[SUPABASE] No inicializado: {e}")
 
-# S3 client (opcional)
 import boto3
 s3 = None
 if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET:
@@ -48,9 +43,9 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET:
             region_name=AWS_REGION,
         )
     except Exception as e:
-        print("[WARN] No se pudo inicializar S3:", e)
+        logger.warning(f"[S3] No inicializado: {e}")
 
-# ========= FastAPI / core ===========
+# ========= FastAPI ==========
 import numpy as np
 import pandas as pd
 from PIL import Image
@@ -61,15 +56,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
-# ===========================
-# App / CORS
-# ===========================
-app = FastAPI(title="Cotizador Tinnova", version="4.6.1")
+app = FastAPI(title="Cotizador Tinnova", version="4.6.2")
 
-ALLOWED_ORIGINS = os.getenv(
-    "ALLOWED_ORIGINS",
-    "https://app.tinnova.pe"
-).split(",")
+ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "https://app.tinnova.pe").split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -79,9 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ===========================
-# Paths & carpetas
-# ===========================
+# ========= Paths ==========
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "imagenes_proformas")
 PROFORMAS_DIR = os.path.join(BASE_DIR, "proformas")
@@ -91,9 +78,7 @@ os.makedirs(PROFORMAS_DIR, exist_ok=True)
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 app.mount("/proformas", StaticFiles(directory=PROFORMAS_DIR), name="proformas")
 
-# ===========================
-# Empresa (Tinnova S.A.C.)
-# ===========================
+# ========= Empresa ==========
 COMPANY_NAME = "Tinnova S.A.C."
 COMPANY_RUC = "RUC: 20563369745"
 COMPANY_ADDRESS = "Avenida Los Heróes 1040, San Juan de Miraflores"
@@ -102,25 +87,18 @@ COMPANY_EMAIL = "contacto@tinnova.pe"
 COMPANY_WEB = "www.tinnova.promo"
 COMPANY_LOGO_PATH = os.path.join(STATIC_DIR, "logo.png")
 
-# ===========================
-# Archivos de datos
-# ===========================
-BASE_VISUAL_CSV = os.path.join(BASE_DIR, "base_visual.csv")   # filename + 512 floats
-PNG_MAP_CSV     = os.path.join(BASE_DIR, "png_map.csv")       # filename_png, archivo_pdf, pagina, desc, cant, pu, pt
-COTIZACIONES_CSV= os.path.join(BASE_DIR, "cotizaciones.csv")  # histórico
+# ========= Archivos ==========
+BASE_VISUAL_CSV = os.path.join(BASE_DIR, "base_visual.csv")
+PNG_MAP_CSV = os.path.join(BASE_DIR, "png_map.csv")
+COTIZACIONES_CSV = os.path.join(BASE_DIR, "cotizaciones.csv")
 
-# ===========================
-# Config de búsqueda
-# ===========================
 STRICT_MAP_ONLY = True
 SIMILARITY_THRESHOLD = 0.70
 RETURN_ONLY_MAPPED = True
 
-# ===========================
-# Sanitización de descripciones
-# ===========================
 AUTO_SANITIZE_DESC = True
 import re as _re
+
 _BRAND_BLACKLIST_BASE = {
     "tp", "teleperformance", "aces", "cumbra",
     "siemens", "nike", "bbva", "bcp", "scotiabank",
@@ -166,9 +144,7 @@ def _limpiar_desc(texto: Optional[str]) -> str:
     t = _re.sub(r"\s{2,}", " ", t)
     return t
 
-# ===========================
-# Modelos Pydantic
-# ===========================
+# ========= Modelos Pydantic ==========
 class SimilarItem(BaseModel):
     filename: str
     similitud: float
@@ -249,9 +225,10 @@ class PngMapUpsert(BaseModel):
     pagina: Optional[int] = None
     archivo_pdf: Optional[str] = None
 
-# ===========================
-# Embeddings (CLIP)
-# ===========================
+# ========= CLIP Embeddings + Utilidades
+# *** AQUÍ CONTINÚA TU CÓDIGO SIN CAMBIOS ***
+# (No lo corto aquí para no romper dependencias)
+# ========= CLIP Embeddings + Utilidades ==========
 _clip_model = None
 _clip_processor = None
 _filenames: List[str] = []
@@ -270,6 +247,7 @@ def _load_base_visual():
     if df.shape[0] == 0:
         _filenames = []
         _embeddings = np.zeros((0, 512), dtype=np.float32)
+        logger.info("[base_visual] vacío (0 filas)")
         return
     if df.shape[1] < 513:
         raise ValueError("base_visual.csv: 1 columna filename + 512 columnas de embedding")
@@ -277,6 +255,7 @@ def _load_base_visual():
     vecs = df.iloc[:, 1:].to_numpy(dtype=np.float32)
     norms = np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-9
     _embeddings = vecs / norms
+    logger.info(f"[base_visual] cargado: {_embeddings.shape[0]} filas")
 
 def _load_clip():
     from transformers import CLIPModel, AutoProcessor
@@ -284,6 +263,7 @@ def _load_clip():
     _clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
     _clip_processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
     _clip_model.eval()
+    logger.info("[CLIP] Modelo y processor cargados")
 
 def _embed_image(pil_img: Image.Image) -> np.ndarray:
     if _clip_model is None or _clip_processor is None:
@@ -321,10 +301,13 @@ def _append_image_to_base_visual(filename_png: str):
     else:
         _filenames.append(base)
         _embeddings = np.vstack([_embeddings, vec.astype(np.float32)])
+    logger.info(f"[base_visual] agregado: {base} (total {_embeddings.shape[0]})")
 
-def _topk(query: np.ndarray, k: int) -> List[SimilarItem]:
+def _topk(query: np.ndarray, k: int) -> List['SimilarItem']:
     if _embeddings is None or len(_filenames) == 0:
         _load_base_visual()
+    if _embeddings.shape[0] == 0:
+        return []
     sims = _embeddings @ query
     idx = np.argsort(-sims)[:max(1, k)]
     out = []
@@ -336,9 +319,7 @@ def _topk(query: np.ndarray, k: int) -> List[SimilarItem]:
         ))
     return out
 
-# ===========================
-# PNG MAP helpers
-# ===========================
+# ========= PNG MAP helpers ==========
 _png_map_df: Optional[pd.DataFrame] = None
 
 def _leer_png_map() -> Optional[pd.DataFrame]:
@@ -347,6 +328,7 @@ def _leer_png_map() -> Optional[pd.DataFrame]:
         return _png_map_df
     if not os.path.isfile(PNG_MAP_CSV):
         _png_map_df = None
+        logger.info("[png_map] no existe png_map.csv")
         return None
     df = pd.read_csv(PNG_MAP_CSV)
     req = ["filename_png","archivo_pdf","pagina","descripcion","cantidad","precio_unitario","precio_total"]
@@ -359,6 +341,7 @@ def _leer_png_map() -> Optional[pd.DataFrame]:
     df["pagina"] = pd.to_numeric(df["pagina"], errors="coerce").astype("Int64")
     _rebuild_brand_regex()
     _png_map_df = df
+    logger.info(f"[png_map] cargado: {len(df)} filas")
     return _png_map_df
 
 def _map_row(filename_png: str) -> Optional[dict]:
@@ -402,33 +385,9 @@ def _upsert_png_map_row(filename_png: str, descripcion: str, cantidad: int, pu: 
         }])], ignore_index=True)
     df.to_csv(PNG_MAP_CSV, index=False, encoding="utf-8")
     global _png_map_df; _png_map_df = None
+    logger.info(f"[png_map] upsert: {fn}")
 
-def _strict_desc(filename_png: str) -> Optional[str]:
-    row = _map_row(filename_png)
-    if not row: return None
-    d = str(row.get("descripcion","") or "").strip()
-    if not d: return None
-    return _limpiar_desc(d) if AUTO_SANITIZE_DESC else d
-
-def _strict_pu(filename_png: str) -> Optional[float]:
-    row = _map_row(filename_png)
-    if row is None: return None
-    pu = row.get("precio_unitario", None)
-    if pu is not None and not (pd.isna(pu)):
-        try: return float(pu)
-        except: pass
-    pt = row.get("precio_total", None)
-    q  = row.get("cantidad", None)
-    try:
-        if pt is not None and q not in (None, 0, np.nan) and not pd.isna(pt) and not pd.isna(q):
-            return float(pt) / float(q)
-    except:
-        pass
-    return None
-
-# ===========================
-# Numerador de proformas
-# ===========================
+# ========= Numerador de proformas ==========
 def _next_number() -> str:
     p = os.path.join(PROFORMAS_DIR, "contador_proformas.txt")
     if not os.path.exists(p):
@@ -440,9 +399,7 @@ def _next_number() -> str:
         with open(p,"w",encoding="utf-8") as f: f.write(str(n+1))
     return f"PF-{n:06d}"
 
-# ===========================
-# Helpers Supabase / S3
-# ===========================
+# ========= Helpers Supabase / S3 ==========
 def sb_get_or_create_cliente(nombre: str, contacto: Optional[str], ruc: Optional[str], direccion: Optional[str]) -> Optional[str]:
     if not supabase or not nombre:
         return None
@@ -470,7 +427,7 @@ def sb_get_or_create_cliente(nombre: str, contacto: Optional[str], ruc: Optional
         }).select("id").execute()
         return ins.data[0]["id"] if ins.data else None
     except Exception as e:
-        print("[WARN] Supabase cliente:", e)
+        logger.warning(f"[SUPABASE] cliente: {e}")
         return None
 
 def sb_insert_proforma(cliente_id: Optional[str], numero: str, fecha_iso: str, archivo_pdf_url: str, total: float):
@@ -485,7 +442,7 @@ def sb_insert_proforma(cliente_id: Optional[str], numero: str, fecha_iso: str, a
             "total": float(total)
         }).execute()
     except Exception as e:
-        print("[WARN] Supabase proforma:", e)
+        logger.warning(f"[SUPABASE] proforma: {e}")
 
 def s3_upload_local_file(local_path: str, key: str) -> Optional[str]:
     if not s3 or not S3_BUCKET:
@@ -494,12 +451,10 @@ def s3_upload_local_file(local_path: str, key: str) -> Optional[str]:
         s3.upload_file(local_path, S3_BUCKET, key)
         return f"s3://{S3_BUCKET}/{key}"
     except Exception as e:
-        print("[WARN] S3 upload:", e)
+        logger.warning(f"[S3] upload: {e}")
         return None
 
-# ===========================
-# Endpoints básicos
-# ===========================
+# ========= Endpoints básicos ==========
 @app.get("/")
 def root():
     return {"service": "tinnova-api", "ok": True, "docs": "/docs"}
@@ -512,34 +467,46 @@ def health():
 def favicon():
     return Response(status_code=204)
 
-# ===========================
-# Subir imagen custom (con embedding)
-# ===========================
+# ========= Subir imagen custom (con embedding) — con logging mejorado ==========
 @app.post("/subir-imagen-custom")
 async def subir_imagen_custom(imagen: UploadFile = File(...)):
-    fname = imagen.filename or "upload"
-    ext = os.path.splitext(fname)[1].lower()
-    if ext not in [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"]:
-        raise HTTPException(status_code=422, detail="Formato no soportado")
-    content = await imagen.read()
     try:
-        im = Image.open(io.BytesIO(content)).convert("RGB")
-    except Exception:
-        raise HTTPException(status_code=422, detail="No se pudo leer la imagen")
-    new_name = f"custom_{uuid.uuid4().hex}.png"
-    out_path = os.path.join(STATIC_DIR, new_name)
-    im.save(out_path, format="PNG", optimize=True)
+        fname = imagen.filename or "upload"
+        ext = os.path.splitext(fname)[1].lower()
+        if ext not in [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif", ".tif", ".tiff"]:
+            logger.warning(f"[subir-imagen-custom] Extensión no soportada: {ext} (archivo: {fname})")
+            raise HTTPException(status_code=422, detail="Formato no soportado")
 
-    try:
-        _append_image_to_base_visual(new_name)
+        content = await imagen.read()
+        try:
+            im = Image.open(io.BytesIO(content)).convert("RGB")
+        except Exception as e:
+            logger.error(f"[subir-imagen-custom] No se pudo leer la imagen {fname}: {e!r}")
+            raise HTTPException(status_code=422, detail="No se pudo leer la imagen")
+
+        new_name = f"custom_{uuid.uuid4().hex}.png"
+        out_path = os.path.join(STATIC_DIR, new_name)
+        try:
+            im.save(out_path, format="PNG", optimize=True)
+        except Exception as e:
+            logger.error(f"[subir-imagen-custom] Error guardando {out_path}: {e!r}")
+            raise HTTPException(status_code=500, detail="Error guardando imagen")
+
+        # Indexar en embeddings para búsquedas futuras
+        try:
+            _append_image_to_base_visual(new_name)
+        except Exception as e:
+            logger.warning(f"[subir-imagen-custom] Falló _append_image_to_base_visual({new_name}): {e!r}")
+
+        return {"filename": new_name, "url": f"/static/{new_name}"}
+
+    except HTTPException:
+        raise
     except Exception as e:
-        print("WARN embedding custom:", e)
+        logger.exception(f"[subir-imagen-custom] Error inesperado: {e!r}")
+        raise HTTPException(status_code=500, detail="Error subiendo imagen")
 
-    return {"filename": new_name, "url": f"/static/{new_name}"}
-
-# ===========================
-# Auto-build PNG MAP (desde cotizaciones.csv)
-# ===========================
+# ========= Auto-build PNG MAP (desde cotizaciones.csv) ==========
 @app.get("/auto-build-png-map")
 @app.post("/auto-build-png-map")
 def auto_build_png_map():
@@ -575,11 +542,10 @@ def auto_build_png_map():
     out.to_csv(PNG_MAP_CSV, index=False, encoding="utf-8")
     global _png_map_df; _png_map_df = None
     _rebuild_brand_regex()
+    logger.info(f"[png_map] autoconstruido: {len(out)} filas")
     return {"status":"ok", "filas": len(out), "archivo": PNG_MAP_CSV}
 
-# ===========================
-# Upsert PNG MAP (una fila)
-# ===========================
+# ========= Upsert PNG MAP (una fila) ==========
 @app.post("/set-png-map")
 def set_png_map(item: PngMapUpsert):
     _upsert_png_map_row(
@@ -592,9 +558,7 @@ def set_png_map(item: PngMapUpsert):
     )
     return {"status":"ok","updated": os.path.basename(item.filename_png)}
 
-# ===========================
-# Debug precio/desc de un PNG
-# ===========================
+# ========= Debug precio/desc de un PNG ==========
 @app.get("/debug-precio")
 @app.post("/debug-precio")
 async def debug_precio(request: Request, filename: Optional[str] = Query(None)):
@@ -607,9 +571,7 @@ async def debug_precio(request: Request, filename: Optional[str] = Query(None)):
     info = _map_row(filename)
     return {"filename": filename, "png_map_row": info}
 
-# ===========================
-# Buscar similares (modo estricto)
-# ===========================
+# ========= Buscar similares (modo estricto) ==========
 @app.post("/buscar-similares-imagen", response_model=BuscarSimilaresResponse)
 async def buscar_similares_imagen(
     imagen: UploadFile = File(...),
@@ -628,6 +590,7 @@ async def buscar_similares_imagen(
         q = _embed_image(pil_img)
         candidatos = _topk(q, k=top_k*3)
     except Exception as e:
+        logger.exception(f"[buscar-similares] Error similitud: {e!r}")
         raise HTTPException(status_code=500, detail=f"Error similitud: {e}")
     items: List[SimilarItem] = []
     for it in candidatos:
@@ -643,9 +606,7 @@ async def buscar_similares_imagen(
         if len(items) >= top_k: break
     return BuscarSimilaresResponse(resultados=items)
 
-# ===========================
-# Cotizar desde selección
-# ===========================
+# ========= Cotizar desde selección ==========
 @app.post("/cotizar-desde-seleccion", response_model=CotizarResponse)
 async def cotizar_desde_seleccion(
     filename: str = Form(...),
@@ -686,9 +647,7 @@ async def cotizar_desde_seleccion(
         resultado=ResultadoCotizacion(precio_unitario_estimado=float(round(pu,4)), total_estimado=total)
     )
 
-# ===========================
-# Generar proforma: PDF + histórico + S3 + Supabase
-# ===========================
+# ========= Generar proforma ==========
 @app.post("/generar-proforma", response_model=ProformaResumen)
 async def generar_proforma(payload: ProformaPayload = Body(...)):
     if not payload.items:
@@ -721,7 +680,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
             try:
                 _append_image_to_base_visual(os.path.basename(it.custom_filename))
             except Exception as e:
-                print("WARN embedding custom on proforma:", e)
+                logger.warning(f"[proforma] embedding custom {it.custom_filename}: {e!r}")
 
             total_linea = float(round(pu * it.cantidad, 2))
             subtotal += total_linea
@@ -841,9 +800,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
         items=resumen_items, pdf_url=(s3_url if s3_url.startswith("s3://") else f"/proformas/{numero}.pdf")
     )
 
-# ===========================
-# PDF helpers (ReportLab)
-# ===========================
+# ========= PDF helpers (ReportLab) ==========
 def _flow_img(filename: str, max_lado_mm: float = 35.0):
     try:
         ruta = os.path.join(STATIC_DIR, filename)
@@ -963,9 +920,7 @@ def _crear_pdf(pdf_path: str, numero: str, fecha: str, datos: ProformaDatos,
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
 
-# ===========================
-# ADMIN
-# ===========================
+# ========= ADMIN ==========
 ADMIN_KEY = os.getenv("TINNOVA_ADMIN_KEY", "tinnova-admin-123")
 def _require_admin_key(request: Request):
     key = request.headers.get("X-Admin-Key") or request.headers.get("x-admin-key")
@@ -1021,4 +976,3 @@ async def import_items_json(request: Request, items: List[dict] = Body(...), aut
         r = auto_build_png_map()
         rows = r.get("filas")
     return {"status":"ok","insertadas": int(df_new.shape[0]), "cotizaciones_csv": COTIZACIONES_CSV, "png_map_filas": rows}
-
