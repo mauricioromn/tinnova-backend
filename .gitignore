@@ -1,50 +1,84 @@
-﻿# Python
+﻿# ------------------------------
+# Python / FastAPI
+# ------------------------------
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 *.so
 
-# Venv
+# Virtual environments
 venv/
 .venv/
 
-# OS/IDE
-.DS_Store
-.idea/
-.vscode/
+# Bytecode / cache
+.pytest_cache/
+.mypy_cache/
+.ipynb_checkpoints/
 
-# Build/Reports
+# Python build / dist
 build/
 dist/
-reports/
-*.pdf
+*.egg-info/
 
-# Env y secrets
+# ------------------------------
+# Node / React (Frontend)
+# ------------------------------
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Vite build output
+dist/
+
+# ------------------------------
+# Environment / Secrets
+# ------------------------------
 .env
 .env.*
 *.key
 *.pem
 
-# Cache de herramientas
-.pytest_cache/
-.mypy_cache/
+# ------------------------------
+# OS / IDE / Editor
+# ------------------------------
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+*.log
 
-# No versionar CSVs grandes
+# ------------------------------
+# No versionar archivos locales
+# ------------------------------
+# CSV pesados y generados
 base_visual.csv
 vectores_imagenes.csv
+png_map.csv
+cotizaciones.csv
 
-# No versionar CSVs grandes
-base_visual.csv
-vectores_imagenes.csv
+# Proformas PDF locales
+proformas/
+*.pdf
 
-# No versionar CSVs grandes
-base_visual.csv
-vectores_imagenes.csv
+# Imágenes locales de extracción
+imagenes_proformas/
+static/
+*.png
+*.jpg
+*.jpeg
+*.webp
 
-# No versionar CSVs grandes
-base_visual.csv
-vectores_imagenes.csv
+# Backups automáticos
+*_backup.*
+*_old.*
+*.bak
 
-cotizador-frontend/
+# ------------------------------
+# Frontend link (si está junto al backend, ignorar build)
+# ------------------------------
+# NO IGNORAR cotizador-frontend (es tu repo frontend separado)
+# Si algún día se copia dentro del backend, ignorar la carpeta creada:
+# cotizador-frontend/
 
