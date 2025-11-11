@@ -1,12 +1,19 @@
 # =============================
-# main.py — Cotizador Tinnova S.A.C. (v4.6.2 + fallback xref + CLIP local cache + invited signup)
+# main.py — Cotizador Tinnova S.A.C.
+# v4.6.2 + fallback xref + CLIP local cache + Supabase/S3 helpers
 # =============================
 
 from __future__ import annotations
-import os, io, re, uuid, csv, logging
+
+import os
+import io
+import re
+import uuid
+import csv
+import logging
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
-from pathlib import Path  # cache local de modelos
 
 # ========= Logging global ==========
 logger = logging.getLogger("tinnova")
@@ -15,10 +22,17 @@ if not logger.handlers:
 
 # ========= ENV / CLOUD ==========
 from dotenv import load_dotenv
-load_dotenv()
+
+# Cargar variables desde .env en el mismo directorio
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+ENV_PATH = os.path.join(BASE_DIR, ".env")
+if os.path.exists(ENV_PATH):
+    load_dotenv(ENV_PATH)
+else:
+    load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE")
+SUPABASE_SERVICE_ROLE = os.getenv("SUPABASE_SERVICE_ROLE") or os.getenv("SUPABASE_KEY")
 
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -26,15 +40,19 @@ AWS_REGION = os.getenv("AWS_REGION", "us-east-2")
 S3_BUCKET = os.getenv("S3_BUCKET")
 
 from supabase import create_client, Client
+
 supabase: Optional[Client] = None
 if SUPABASE_URL and SUPABASE_SERVICE_ROLE:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE)
-        logger.info("[SUPABASE] Cliente inicializado con SERVICE_ROLE")
+        logger.info("[SUPABASE] Cliente inicializado")
     except Exception as e:
         logger.warning(f"[SUPABASE] No inicializado: {e}")
+else:
+    logger.info("[SUPABASE] Variables no configuradas, se continúa sin Supabase")
 
 import boto3
+
 s3 = None
 if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET:
     try:
@@ -47,13 +65,24 @@ if AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY and S3_BUCKET:
         logger.info("[S3] Cliente inicializado")
     except Exception as e:
         logger.warning(f"[S3] No inicializado: {e}")
+else:
+    logger.info("[S3] Variables no configuradas, se continúa sin S3")
 
-# ========= FastAPI ==========
+# ========= FastAPI / libs ==========
 import numpy as np
 import pandas as pd
 from PIL import Image
 
-from fastapi import FastAPI, File, Form, UploadFile, HTTPException, Body, Query, Request
+from fastapi import (
+    FastAPI,
+    File,
+    Form,
+    UploadFile,
+    HTTPException,
+    Body,
+    Query,
+    Request,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import Response
@@ -63,7 +92,7 @@ app = FastAPI(title="Cotizador Tinnova", version="4.6.2")
 
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
-    "http://localhost:5173,https://app.tinnova.pe"
+    "http://localhost:5173,https://app.tinnova.pe",
 ).split(",")
 
 app.add_middleware(
@@ -75,7 +104,6 @@ app.add_middleware(
 )
 
 # ========= Paths ==========
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "imagenes_proformas")
 PROFORMAS_DIR = os.path.join(BASE_DIR, "proformas")
 os.makedirs(STATIC_DIR, exist_ok=True)
@@ -93,7 +121,7 @@ COMPANY_EMAIL = "contacto@tinnova.pe"
 COMPANY_WEB = "www.tinnova.pe"
 COMPANY_LOGO_PATH = os.path.join(STATIC_DIR, "logo.png")
 
-# ========= Archivos ==========
+# ========= Archivos base ==========
 BASE_VISUAL_CSV = os.path.join(BASE_DIR, "base_visual.csv")
 PNG_MAP_CSV = os.path.join(BASE_DIR, "png_map.csv")
 COTIZACIONES_CSV = os.path.join(BASE_DIR, "cotizaciones.csv")
@@ -107,9 +135,19 @@ AUTO_SANITIZE_DESC = True
 import re as _re
 
 _BRAND_BLACKLIST_BASE = {
-    "tp", "teleperformance", "aces", "cumbra",
-    "siemens", "nike", "bbva", "bcp", "scotiabank",
-    "interbank", "tottus", "ripley", "saga falabella",
+    "tp",
+    "teleperformance",
+    "aces",
+    "cumbra",
+    "siemens",
+    "nike",
+    "bbva",
+    "bcp",
+    "scotiabank",
+    "interbank",
+    "tottus",
+    "ripley",
+    "saga falabella",
 }
 _OCR_FIXES = [
     (_re.compile(r"\bedificaci\s+ones\b", _re.I), "edificaciones"),
@@ -138,7 +176,8 @@ def _rebuild_brand_regex():
     brands = sorted({b for b in brands if b.strip()}, key=len, reverse=True)
     esc = [_re.escape(b) for b in brands]
     _brand_tail_regex = _re.compile(
-        rf"(?:\s|[-—,.:])*(?:{'|'.join(esc)})\s*$", _re.I
+        rf"(?:\s|[-—,.:])*(?:{'|'.join(esc)})\s*$",
+        _re.I,
     )
 
 
@@ -158,6 +197,7 @@ def _limpiar_desc(texto: Optional[str]) -> str:
     t = t.strip(" .,-–—")
     t = _re.sub(r"\s{2,}", " ", t)
     return t
+
 
 # ========= MODELOS ==========
 class SimilarItem(BaseModel):
@@ -252,93 +292,6 @@ class PngMapUpsert(BaseModel):
     archivo_pdf: Optional[str] = None
 
 
-# ========= AUTH INVITADOS ==========
-class RegisterInviteRequest(BaseModel):
-    email: str
-    password: str
-    full_name: Optional[str] = None
-    code: str
-
-
-@app.post("/auth/register-invite")
-def register_invite(payload: RegisterInviteRequest, request: Request):
-    """
-    Registro solo con invitación.
-    - Verifica que (email, code) exista en invited_users y no esté usado.
-    - Crea usuario en Supabase Auth usando SERVICE_ROLE.
-    - Marca la invitación como usada.
-    Este endpoint SOLO es llamado por tu frontend, pero el secreto nunca sale del backend.
-    """
-    if not supabase:
-        raise HTTPException(
-            status_code=500,
-            detail="Supabase no configurado en backend"
-        )
-
-    email = (payload.email or "").strip().lower()
-    code = (payload.code or "").strip()
-    full_name = (payload.full_name or "").strip() if payload.full_name else ""
-    password = (payload.password or "").strip()
-
-    if not email or not code or not password:
-        raise HTTPException(status_code=400, detail="Datos incompletos")
-
-    # 1) Verificar invitación
-    try:
-        invited = (
-            supabase.table("invited_users")
-            .select("id, used")
-            .eq("email", email)
-            .eq("code", code)
-            .limit(1)
-            .execute()
-        )
-    except Exception as e:
-        logger.exception("[INVITE] Error consultando invited_users")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error consultando invitación: {e}"
-        )
-
-    if not invited.data:
-        raise HTTPException(status_code=400, detail="Invitación no válida")
-    if invited.data[0].get("used"):
-        raise HTTPException(status_code=400, detail="Esta invitación ya fue usada")
-
-    # 2) Crear usuario en Supabase Auth (admin.create_user)
-    try:
-        # supabase-py 2.x: admin API disponible con SERVICE_ROLE
-        res = supabase.auth.admin.create_user(
-            {
-                "email": email,
-                "password": password,
-                "email_confirm": True,
-                "user_metadata": {"full_name": full_name},
-            }
-        )
-        # Si algo falla, res lanza excepción; si llega aquí, asumimos OK.
-    except Exception as e:
-        logger.exception("[INVITE] Error creando usuario en Supabase Auth")
-        raise HTTPException(
-            status_code=500,
-            detail=f"No se pudo crear el usuario: {e}"
-        )
-
-    # 3) Marcar invitación como usada
-    try:
-        inv_id = invited.data[0]["id"]
-        (
-            supabase.table("invited_users")
-            .update({"used": True})
-            .eq("id", inv_id)
-            .execute()
-        )
-    except Exception as e:
-        logger.warning(f"[INVITE] Error al marcar invitación usada: {e}")
-
-    return {"status": "ok"}
-
-
 # ========= CLIP & EMBEDDINGS ==========
 _clip_model = None
 _clip_processor = None
@@ -367,7 +320,7 @@ def _load_base_visual():
     _embeddings = vecs / norms
 
 
-# ==== CLIP: cache local primero, si no descarga ====
+# ==== CLIP: cache local en models/clip, si no existe descarga una vez ====
 from transformers import CLIPModel, CLIPProcessor
 
 
@@ -377,39 +330,39 @@ def _load_clip():
         return
 
     MODEL_ID = "openai/clip-vit-base-patch32"
-    MODEL_DIR = Path(__file__).parent / "models" / "clip"
+    MODEL_DIR = Path(BASE_DIR) / "models" / "clip"
 
-    # 1) Intentar cache local
+    # 1) Intentar desde cache local
     try:
         _clip_processor = CLIPProcessor.from_pretrained(
             MODEL_DIR,
-            local_files_only=True
+            local_files_only=True,
         )
         _clip_model = CLIPModel.from_pretrained(
             MODEL_DIR,
-            local_files_only=True
+            local_files_only=True,
         )
         _clip_model.eval()
         logger.info(f"[CLIP] Cargado desde cache local: {MODEL_DIR}")
         return
     except Exception as e:
-        logger.warning(f"[CLIP] Cache local no disponible ({MODEL_DIR}): {e}")
+        logger.warning(f"[CLIP] Cache local no disponible: {e}")
 
     # 2) Descargar y guardar (primera vez)
     try:
-        logger.info(f"[CLIP] Descargando {MODEL_ID} y guardando en {MODEL_DIR} ...")
+        logger.info(f"[CLIP] Descargando {MODEL_ID} en {MODEL_DIR} ...")
         MODEL_DIR.mkdir(parents=True, exist_ok=True)
         _clip_processor = CLIPProcessor.from_pretrained(MODEL_ID)
         _clip_model = CLIPModel.from_pretrained(MODEL_ID)
         _clip_processor.save_pretrained(MODEL_DIR)
         _clip_model.save_pretrained(MODEL_DIR)
         _clip_model.eval()
-        logger.info(f"[CLIP] Descargado y guardado en {MODEL_DIR}")
+        logger.info("[CLIP] Descargado y cacheado correctamente")
     except Exception as e:
         logger.exception(f"[CLIP] No se pudo cargar el modelo: {e}")
         raise HTTPException(
             status_code=500,
-            detail="No se pudo cargar el modelo CLIP"
+            detail="No se pudo cargar el modelo CLIP",
         )
 
 
@@ -422,7 +375,7 @@ def _embed_image(pil_img: Image.Image) -> np.ndarray:
     _clip_model.to(device)
     inputs = _clip_processor(
         images=pil_img.convert("RGB"),
-        return_tensors="pt"
+        return_tensors="pt",
     )
     with torch.no_grad():
         feats = _clip_model.get_image_features(
@@ -465,7 +418,7 @@ def _topk(query: np.ndarray, k: int) -> List[SimilarItem]:
         return []
     sims = _embeddings @ query
     idx = np.argsort(-sims)[: max(1, k)]
-    out: List[SimilarItem] = []
+    out = []
     for i in idx:
         out.append(
             SimilarItem(
@@ -476,7 +429,8 @@ def _topk(query: np.ndarray, k: int) -> List[SimilarItem]:
         )
     return out
 
-# ========= PNG MAP helpers (con Fallback) ==========
+
+# ========= PNG MAP helpers (con fallback) ==========
 _png_map_df: Optional[pd.DataFrame] = None
 
 
@@ -509,7 +463,6 @@ def _leer_png_map():
     return _png_map_df
 
 
-# Fallback _xrefNN → _xref
 def _map_row(filename_png: str) -> Optional[dict]:
     df = _leer_png_map()
     if df is None:
@@ -531,7 +484,14 @@ def _map_row(filename_png: str) -> Optional[dict]:
     return None
 
 
-def _upsert_png_map_row(filename_png, descripcion, cantidad, pu, total, archivo_pdf):
+def _upsert_png_map_row(
+    filename_png,
+    descripcion,
+    cantidad,
+    pu,
+    total,
+    archivo_pdf,
+):
     cols = [
         "filename_png",
         "archivo_pdf",
@@ -549,15 +509,21 @@ def _upsert_png_map_row(filename_png, descripcion, cantidad, pu, total, archivo_
     else:
         df = pd.DataFrame(columns=cols)
     if "pagina" in df.columns:
-        df["pagina"] = pd.to_numeric(df["pagina"], errors="coerce").astype("Int64")
+        df["pagina"] = (
+            pd.to_numeric(df["pagina"], errors="coerce").astype("Int64")
+        )
     for c in ["cantidad", "precio_unitario", "precio_total"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     fn = os.path.basename(filename_png)
     exists = df["filename_png"].astype(str) == fn
     if exists.any():
         idx = df.index[exists][0]
-        df.at[idx, "archivo_pdf"] = archivo_pdf or df.at[idx, "archivo_pdf"]
-        df.at[idx, "descripcion"] = descripcion or df.at[idx, "descripcion"]
+        df.at[idx, "archivo_pdf"] = (
+            archivo_pdf or df.at[idx, "archivo_pdf"]
+        )
+        df.at[idx, "descripcion"] = (
+            descripcion or df.at[idx, "descripcion"]
+        )
         df.at[idx, "cantidad"] = (
             cantidad if cantidad is not None else df.at[idx, "cantidad"]
         )
@@ -623,6 +589,7 @@ def _strict_pu(filename_png: str) -> Optional[float]:
         pass
     return None
 
+
 # ========= Proforma counter ==========
 def _next_number() -> str:
     p = os.path.join(PROFORMAS_DIR, "contador_proformas.txt")
@@ -637,6 +604,7 @@ def _next_number() -> str:
         with open(p, "w") as f:
             f.write(str(n + 1))
     return f"PF-{n:06d}"
+
 
 # ========= Supabase / S3 helpers ==========
 def sb_get_or_create_cliente(nombre, contacto, ruc, direccion):
@@ -718,6 +686,7 @@ def s3_upload_local_file(local_path, key):
         logger.warning(f"[S3] upload: {e}")
         return None
 
+
 # ========= Rutas básicas ==========
 @app.get("/")
 def root():
@@ -732,6 +701,7 @@ def health():
 @app.get("/favicon.ico")
 def favicon():
     return Response(status_code=204)
+
 
 # ========= subir imagen custom ==========
 @app.post("/subir-imagen-custom")
@@ -777,6 +747,7 @@ async def subir_imagen_custom(imagen: UploadFile = File(...)):
             status_code=500,
             detail="Error subiendo imagen",
         )
+
 
 # ========= auto build map ==========
 @app.get("/auto-build-png-map")
@@ -862,6 +833,7 @@ def auto_build_png_map():
     _rebuild_brand_regex()
     return {"status": "ok", "filas": len(out)}
 
+
 # ========= set map ==========
 @app.post("/set-png-map")
 def set_png_map(item: PngMapUpsert):
@@ -881,6 +853,7 @@ def set_png_map(item: PngMapUpsert):
     )
     return {"status": "ok"}
 
+
 # ========= debug precio ==========
 @app.get("/debug-precio")
 @app.post("/debug-precio")
@@ -890,7 +863,8 @@ async def debug_precio(
 ):
     if (not filename) and request.method == "POST":
         try:
-            filename = (await request.json()).get("filename")
+            body = await request.json()
+            filename = body.get("filename")
         except Exception:
             pass
     if not filename:
@@ -900,6 +874,7 @@ async def debug_precio(
         )
     info = _map_row(filename)
     return {"filename": filename, "png_map_row": info}
+
 
 # ========= buscar similares ==========
 @app.post("/buscar-similares-imagen", response_model=BuscarSimilaresResponse)
@@ -924,6 +899,8 @@ async def buscar_similares_imagen(
             _load_base_visual()
         q = _embed_image(pil_img)
         candidatos = _topk(q, k=top_k * 3)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(e)
         raise HTTPException(
@@ -947,6 +924,7 @@ async def buscar_similares_imagen(
         if len(items) >= top_k:
             break
     return BuscarSimilaresResponse(resultados=items)
+
 
 # ========= cotizar ==========
 @app.post("/cotizar-desde-seleccion", response_model=CotizarResponse)
@@ -1010,6 +988,7 @@ async def cotizar_desde_seleccion(
         ),
     )
 
+
 # ========= generar proforma ==========
 @app.post("/generar-proforma", response_model=ProformaResumen)
 async def generar_proforma(payload: ProformaPayload = Body(...)):
@@ -1023,8 +1002,10 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
             status_code=422,
             detail="Cliente requerido",
         )
+
     fecha_str = (
-        payload.datos.fecha or datetime.now().strftime("%d/%m/%Y")
+        payload.datos.fecha
+        or datetime.now().strftime("%d/%m/%Y")
     )
     igv_pct = float(payload.datos.igv_porcentaje or 18.0)
     moneda = payload.datos.moneda or "S/"
@@ -1114,6 +1095,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
                     detail=f"{it.filename}: sin precio",
                 )
             pu = float(pu_map)
+
         total_l = float(round(pu * it.cantidad, 2))
         subtotal += total_l
         resumen_items.append(
@@ -1129,6 +1111,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
     igv = round(subtotal * (igv_pct / 100), 2)
     total = round(subtotal + igv, 2)
     numero = _next_number()
+
     pdf_path = os.path.join(PROFORMAS_DIR, f"{numero}.pdf")
     _crear_pdf(
         pdf_path,
@@ -1144,8 +1127,12 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
     )
 
     s3_key = f"proformas/{numero}.pdf"
-    s3_url = s3_upload_local_file(pdf_path, s3_key) or f"/proformas/{numero}.pdf"
+    s3_url = (
+        s3_upload_local_file(pdf_path, s3_key)
+        or f"/proformas/{numero}.pdf"
+    )
 
+    # Guardar en cotizaciones.csv
     cot_cols = [
         "archivo",
         "pagina",
@@ -1183,11 +1170,12 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
         )
         df.to_csv(COTIZACIONES_CSV, index=False)
     else:
-        pd.DataFrame(cot_rows, columns=cot_cols).to_csv(
-            COTIZACIONES_CSV,
-            index=False,
-        )
+        pd.DataFrame(
+            cot_rows,
+            columns=cot_cols,
+        ).to_csv(COTIZACIONES_CSV, index=False)
 
+    # Actualizar mapa PNG
     for it in resumen_items:
         _upsert_png_map_row(
             filename_png=os.path.basename(it.filename),
@@ -1198,6 +1186,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
             archivo_pdf=os.path.basename(pdf_path),
         )
 
+    # Supabase: guardar proforma
     try:
         fecha_iso = datetime.strptime(
             fecha_str,
@@ -1235,6 +1224,7 @@ async def generar_proforma(payload: ProformaPayload = Body(...)):
         ),
     )
 
+
 # ========= PDF helpers ==========
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -1247,7 +1237,10 @@ from reportlab.platypus import (
     TableStyle,
     Image as RLImage,
 )
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.styles import (
+    getSampleStyleSheet,
+    ParagraphStyle,
+)
 
 
 def _flow_img(filename: str, max_lado_mm: float = 35.0):
@@ -1262,7 +1255,11 @@ def _flow_img(filename: str, max_lado_mm: float = 35.0):
         if w == 0 or h == 0:
             return ""
         esc = (max_lado_mm * mm) / max(w, h)
-        return RLImage(ruta, width=w * esc, height=h * esc)
+        return RLImage(
+            ruta,
+            width=w * esc,
+            height=h * esc,
+        )
     except Exception:
         return ""
 
@@ -1308,6 +1305,7 @@ def _crear_pdf(
         fontName="Helvetica-Bold",
     )
     story = []
+
     logo = (
         RLImage(COMPANY_LOGO_PATH, width=120, height=60)
         if os.path.exists(COMPANY_LOGO_PATH)
@@ -1321,7 +1319,9 @@ def _crear_pdf(
         COMPANY_EMAIL,
         COMPANY_WEB,
     ]
-    empresa = [Paragraph(x, styles["Normal"]) for x in empresa if x]
+    empresa = [
+        Paragraph(x, styles["Normal"]) for x in empresa if x
+    ]
     header = Table(
         [[logo, empresa]],
         colWidths=[60 * mm, None],
@@ -1340,19 +1340,31 @@ def _crear_pdf(
     story.append(header)
     story.append(Spacer(1, 8))
     story.append(
-        Paragraph(f"<b>PROFORMA</b> – {numero}", styles["Title"])
+        Paragraph(
+            f"<b>PROFORMA</b> – {numero}",
+            styles["Title"],
+        )
     )
     story.append(Spacer(1, 6))
-    story.append(Paragraph(f"Fecha: {fecha}", styles["Normal"]))
+    story.append(
+        Paragraph(f"Fecha: {fecha}", styles["Normal"])
+    )
     story.append(Spacer(1, 10))
+
     datos_tbl = [
         ["Cliente:", datos.cliente],
         ["Contacto:", datos.contacto or "-"],
         ["RUC:", datos.ruc or "-"],
         ["Dirección:", datos.direccion or "-"],
         ["Cotizado por:", (datos.cotizado_por or "-")],
-        ["Tiempo producción:", datos.tiempo_produccion or "-"],
-        ["Condiciones de pago:", datos.condiciones_pago or "-"],
+        [
+            "Tiempo producción:",
+            datos.tiempo_produccion or "-",
+        ],
+        [
+            "Condiciones de pago:",
+            datos.condiciones_pago or "-",
+        ],
         ["Entrega:", datos.entrega or "-"],
         [
             "Validez de oferta (días):",
@@ -1364,15 +1376,27 @@ def _crear_pdf(
     t1.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (0, -1), colors.lightgrey),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (0, -1),
+                    colors.lightgrey,
+                ),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.25,
+                    colors.grey,
+                ),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
             ]
         )
     )
     story.append(t1)
     story.append(Spacer(1, 12))
+
     head = [["Imagen", "Descripción", "Cant.", "P.U.", "Total"]]
     rows = []
     for it in items:
@@ -1394,16 +1418,33 @@ def _crear_pdf(
     t2.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
+                (
+                    "BACKGROUND",
+                    (0, 0),
+                    (-1, 0),
+                    colors.lightgrey,
+                ),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.25,
+                    colors.grey,
+                ),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("ALIGN", (-2, 1), (-1, -1), "RIGHT"),
+                (
+                    "ALIGN",
+                    (-2, 1),
+                    (-1, -1),
+                    "RIGHT",
+                ),
             ]
         )
     )
     story.append(t2)
     story.append(Spacer(1, 12))
+
     t3 = Table(
         [
             [
@@ -1419,7 +1460,10 @@ def _crear_pdf(
             ],
             [
                 "Total:",
-                Paragraph(f"{moneda} {total:.2f}", p_right_b),
+                Paragraph(
+                    f"{moneda} {total:.2f}",
+                    p_right_b,
+                ),
             ],
         ],
         colWidths=[420, 130],
@@ -1429,7 +1473,13 @@ def _crear_pdf(
             [
                 ("ALIGN", (1, 0), (1, -1), "RIGHT"),
                 ("BOX", (0, 0), (-1, -1), 0.5, colors.grey),
-                ("INNERGRID", (0, 0), (-1, -1), 0.25, colors.grey),
+                (
+                    "INNERGRID",
+                    (0, 0),
+                    (-1, -1),
+                    0.25,
+                    colors.grey,
+                ),
             ]
         )
     )
@@ -1450,15 +1500,23 @@ def _crear_pdf(
                 18,
                 f"Cotizado por: {datos.cotizado_por}",
             )
-            canvas.drawRightString(w - 24, 18, f"{COMPANY_WEB}")
+            canvas.drawRightString(
+                w - 24,
+                18,
+                f"{COMPANY_WEB}",
+            )
         else:
             canvas.drawString(24, 18, f"{COMPANY_WEB}")
         canvas.restoreState()
 
     doc.build(story, onFirstPage=_footer, onLaterPages=_footer)
 
-# ========= ADMIN ==========
-ADMIN_KEY = os.getenv("TINNOVA_ADMIN_KEY", "tinnova-admin-123")
+
+# ========= ADMIN importe ==========
+ADMIN_KEY = os.getenv(
+    "TINNOVA_ADMIN_KEY",
+    "tinnova-admin-123",
+)
 
 
 def _require_admin_key(request: Request):
