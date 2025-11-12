@@ -90,17 +90,31 @@ from pydantic import BaseModel, Field
 
 app = FastAPI(title="Cotizador Tinnova", version="4.6.2")
 
+# ========= CORS robusto =========
 ALLOWED_ORIGINS = os.getenv(
     "ALLOWED_ORIGINS",
     "http://localhost:5173,https://app.tinnova.pe",
 ).split(",")
+ALLOWED_ORIGINS = [o.strip() for o in ALLOWED_ORIGINS if o.strip()]
+
+EXPOSE_HEADERS = os.getenv(
+    "EXPOSE_HEADERS",
+    "Content-Disposition"
+).split(",")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[o.strip() for o in ALLOWED_ORIGINS if o.strip()],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # GET, POST, OPTIONS incluidos
+    allow_headers=[
+        "*",
+        "X-Admin-Key",
+        "Authorization",
+        "Content-Type",
+        "X-Requested-With",
+    ],
+    expose_headers=[h.strip() for h in EXPOSE_HEADERS if h.strip()],
 )
 
 # ========= Paths ==========
@@ -701,6 +715,23 @@ def health():
 @app.get("/favicon.ico")
 def favicon():
     return Response(status_code=204)
+
+
+# Preflight universal (útil si el proxy no reenvía OPTIONS hasta la app)
+@app.options("/{path_name:path}")
+def preflight_handler(path_name: str):
+    return Response(status_code=204)
+
+
+# Diagnóstico rápido de CORS
+@app.get("/__corscheck")
+def cors_check(request: Request):
+    return {
+        "ok": True,
+        "origin_seen": request.headers.get("origin"),
+        "allowed_origins": ALLOWED_ORIGINS,
+        "expose_headers": EXPOSE_HEADERS,
+    }
 
 
 # ========= subir imagen custom ==========
@@ -1621,4 +1652,5 @@ async def import_items_json(
         "insertadas": int(df_new.shape[0]),
         "png_map_filas": rows,
     }
+
 
